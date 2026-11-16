@@ -9,6 +9,7 @@ from .coverage import CoverageEngine
 from .economics import PriceEngine
 from .ledger import Ledger, digest
 from .optimizer import PortfolioOptimizer
+from .phasing import ScheduleEngine
 from .sensitivity import SensitivityAnalyzer
 from .diagnostics import SupplyDiagnostics
 from .audit import DecisionAudit
@@ -21,6 +22,7 @@ class PortfolioService:
         self.coverage = CoverageEngine()
         self.prices = PriceEngine()
         self.optimizer = PortfolioOptimizer(self.coverage, self.prices)
+        self.schedule_engine = ScheduleEngine(self.coverage, self.prices, self.optimizer)
         self.sensitivity = SensitivityAnalyzer(self.optimizer, self.coverage, self.prices)
         self.diagnostics = SupplyDiagnostics(self.coverage, self.prices)
         self.audit = DecisionAudit(self.ledger, self.coverage, self.prices, self.optimizer)
@@ -54,9 +56,11 @@ class PortfolioService:
         selected = [offer for offer in offers if search.best and offer.package in search.best.packages]
         selected_quotes = self.prices.all_quotes(selected, requirement)
         selected_coverage = self.coverage.evaluate(requirement, selected)
-        report = {"schema_version": 1, "requirement": requirement.key,
+        schedule = self.schedule_engine.evaluate_schedule(requirement, selected)
+        report = {"schema_version": 2, "requirement": requirement.key,
                   "requirement_revision": requirement_doc["revision"],
                   "client": requirement.client, "budget": requirement.budget,
+                  "phases": requirement.phases,
                   "feasible": search.best is not None,
                   "selection": list(search.best.packages) if search.best else [],
                   "cost": search.best.cost if search.best else None,
@@ -65,6 +69,7 @@ class PortfolioService:
                   "quotes": [quote.document() for quote in selected_quotes],
                   "budget_pressure": self.prices.budget_pressure(selected_quotes, requirement),
                   "provider_spend": self.prices.provider_breakdown(selected_quotes),
+                  "schedule": schedule.document(),
                   "selected_attribution": self.coverage.attribution(requirement, selected),
                   "cost_per_credited_sample": self.prices.cost_per_credited_sample(
                       search.best.cost, selected_coverage.total_credited) if search.best else None,
@@ -175,16 +180,54 @@ class PortfolioService:
             chosen = [offers[package] for package in group]
             quotes = self.prices.all_quotes(chosen, requirement)
             coverage = self.coverage.evaluate(requirement, chosen)
+            schedule = self.schedule_engine.evaluate_schedule(requirement, chosen)
             rejected = [{"package": quote.package, "reason": quote.reason}
                         for quote in quotes if not quote.permitted]
             results.append({"index": position, "packages": sorted(group),
                             "cost": self.prices.total(quotes), "coverage": coverage.document(),
                             "eligible": not rejected, "restrictions": rejected,
-                            "within_budget": self.prices.within_budget(quotes, requirement),
-                            "feasible": not rejected and coverage.mandatory_complete
-                            and self.prices.within_budget(quotes, requirement),
+                            "period_one_within_budget": self.prices.within_budget(quotes, requirement),
+                            "feasible": not rejected
+                            and schedule.mandatory_complete_every_period
+                            and schedule.every_period_within_budget,
+                            "schedule": schedule.document(),
+                            "period_costs": [view.period_cost for view in schedule.periods],
+                            "every_period_within_budget": schedule.every_period_within_budget,
+                            "mandatory_complete_every_period":
+                            schedule.mandatory_complete_every_period,
                             "provider_spend": self.prices.provider_breakdown(quotes),
                             "attribution": self.coverage.attribution(requirement, chosen)})
         return {"requirement": requirement.key,
                 "recommended": list(preferred.best.packages) if preferred.best else [],
                 "portfolios": results}
+
+    def schedule(self, requirement_key: str, package_keys: list[str] | None = None) -> dict[str, Any]:
+        """逐期权利、逐期承诺支出、总成本与提前退出选项（不写目录、不建分析）。"""
+        _, requirement = self.catalog.requirement(requirement_key)
+        offers = {offer.package: offer for _, offer in self.catalog.offers()}
+        if package_keys is None:
+            search = self.optimizer.search(requirement, list(offers.values()))
+            package_keys = list(search.best.packages) if search.best else []
+        if not package_keys:
+            raise PortfolioError("empty_selection", "schedule needs at least one package")
+        if len(package_keys) != len(set(package_keys)):
+            raise PortfolioError("portfolio_shape", "selection needs distinct packages")
+        if any(package not in offers for package in package_keys):
+            raise PortfolioError("unknown_offer", "requested package not in catalog")
+        chosen = [offers[package] for package in package_keys]
+        return self.schedule_engine.evaluate_schedule(requirement, chosen).document()
+
+    def renewal_failure(self, requirement_key: str, package_keys: list[str],
+                        failed_package: str, failure_phase: int) -> dict[str, Any]:
+        """续费失败情景：自失败期起该订阅失效，展示真实缺口、后续费用与恢复方案。"""
+        _, requirement = self.catalog.requirement(requirement_key)
+        pairs = self.catalog.offers()
+        offers = {offer.package: offer for _, offer in pairs}
+        if not package_keys or len(package_keys) != len(set(package_keys)):
+            raise PortfolioError("portfolio_shape", "selection needs distinct packages")
+        if any(package not in offers for package in package_keys):
+            raise PortfolioError("unknown_offer", "requested package not in catalog")
+        chosen = [offers[package] for package in package_keys]
+        catalog = [offer for _, offer in pairs]
+        return self.schedule_engine.renewal_failure(
+            requirement, chosen, failed_package, failure_phase, catalog)

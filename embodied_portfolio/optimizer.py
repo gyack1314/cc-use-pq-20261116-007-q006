@@ -6,8 +6,9 @@ from itertools import combinations
 from typing import Any
 
 from .contracts import Offer, Requirement, PortfolioError
-from .coverage import CoverageEngine, CoverageResult
-from .economics import PriceEngine, Quote
+from .coverage import CoverageEngine
+from .economics import PriceEngine
+from .phasing import ScheduleEngine
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,8 @@ class Candidate:
     duplicates: int
     mandatory_complete: bool
     within_budget: bool
+    period_costs: tuple[str, ...] = ()
+    every_period_within_budget: bool = True
 
     def document(self) -> dict[str, Any]:
         return asdict(self)
@@ -47,6 +50,7 @@ class PortfolioOptimizer:
         self.coverage = coverage
         self.prices = prices
         self.maximum_candidates = maximum_candidates
+        self.schedule_engine = ScheduleEngine(coverage, prices, optimizer=self)
 
     def eligible(self, requirement: Requirement, offers: list[Offer]) -> tuple[list[Offer], list[dict[str, str]]]:
         eligible = []
@@ -64,13 +68,17 @@ class PortfolioOptimizer:
         return eligible, filtered
 
     def evaluate(self, requirement: Requirement, offers: list[Offer]) -> Candidate:
-        coverage = self.coverage.evaluate(requirement, offers)
-        quotes = self.prices.all_quotes(offers, requirement)
-        amount = self.prices.total(quotes)
+        schedule = self.schedule_engine.evaluate_schedule(requirement, offers)
+        final_view = schedule.periods[-1]
+        coverage = final_view.coverage
+        amount = schedule.total_cost
+        period_costs = tuple(view.period_cost for view in schedule.periods)
         return Candidate(tuple(sorted(offer.package for offer in offers)), amount,
                          coverage.weighted_fraction, coverage.total_credited,
                          coverage.total_shortage, coverage.total_duplicate,
-                         coverage.mandatory_complete, Decimal(amount) <= Decimal(requirement.budget))
+                         schedule.mandatory_complete_every_period,
+                         schedule.every_period_within_budget,
+                         period_costs, schedule.every_period_within_budget)
 
     @staticmethod
     def ranking(candidate: Candidate) -> tuple:

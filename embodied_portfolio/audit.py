@@ -8,6 +8,7 @@ from .coverage import CoverageEngine
 from .economics import PriceEngine
 from .ledger import Ledger, digest
 from .optimizer import PortfolioOptimizer
+from .phasing import ScheduleEngine
 
 
 class DecisionAudit:
@@ -19,6 +20,7 @@ class DecisionAudit:
         self.coverage = coverage
         self.prices = prices
         self.optimizer = optimizer
+        self.schedule_engine = ScheduleEngine(coverage, prices, optimizer)
 
     def _inputs(self, analysis_id: int) -> tuple[dict[str, Any], Requirement, list[dict[str, Any]], list[Offer]]:
         documents = self.ledger.analysis_inputs(analysis_id)
@@ -43,6 +45,7 @@ class DecisionAudit:
         selected_coverage = self.coverage.evaluate(requirement, selected)
         quotes = self.prices.all_quotes(selected, requirement)
         recomputed_cost = self.prices.total(quotes) if historical.best else None
+        recomputed_schedule = self.schedule_engine.evaluate_schedule(requirement, selected)
         mismatches = []
         if not snapshot["verified"]:
             mismatches.append("snapshot_digest")
@@ -70,6 +73,10 @@ class DecisionAudit:
                 self.prices.cost_per_credited_sample(recomputed_cost, selected_coverage.total_credited)
                 if recomputed_cost is not None else None):
             mismatches.append("unit_cost")
+        stored_schedule = stored.get("schedule")
+        if stored_schedule is not None and canonical(stored_schedule) != canonical(
+                recomputed_schedule.document()):
+            mismatches.append("schedule")
         lineage = [{"kind": doc["kind"], "key": doc["key"],
                     "revision": doc["revision"], "digest": doc["digest"]}
                    for doc in [requirement_doc, *offer_docs]]
@@ -79,6 +86,7 @@ class DecisionAudit:
                 "input_current": current == analysis["input_digest"],
                 "lineage": lineage, "selection": recomputed,
                 "cost": recomputed_cost, "coverage": selected_coverage.document(),
+                "schedule": recomputed_schedule.document(),
                 "snapshot_digest_valid": snapshot["verified"],
                 "source_digest_valid": source_integrity}
 

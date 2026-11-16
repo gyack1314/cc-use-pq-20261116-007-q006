@@ -73,6 +73,14 @@ def parser() -> ArgumentParser:
     groups = commands.add_parser("compare-packages")
     groups.add_argument("requirement")
     groups.add_argument("groups", nargs="+", help="comma-separated package keys per portfolio")
+    schedule = commands.add_parser("schedule")
+    schedule.add_argument("requirement")
+    schedule.add_argument("packages", nargs="*", help="可选：指定组合；缺省使用最优组合")
+    renewal = commands.add_parser("renewal-failure")
+    renewal.add_argument("requirement")
+    renewal.add_argument("failed_package")
+    renewal.add_argument("failure_phase", type=int)
+    renewal.add_argument("packages", nargs="*", help="当前组合的包键")
     events = commands.add_parser("events")
     events.add_argument("--key")
     commands.add_parser("status")
@@ -169,6 +177,11 @@ def execute(args: Namespace) -> Any:
             return service.compare_analyses(args.earlier, args.later)
         if args.command == "compare-packages":
             return service.compare_packages(args.requirement, [item.split(",") for item in args.groups])
+        if args.command == "schedule":
+            return service.schedule(args.requirement, args.packages or None)
+        if args.command == "renewal-failure":
+            return service.renewal_failure(args.requirement, args.packages,
+                                           args.failed_package, args.failure_phase)
         if args.command == "events":
             return service.ledger.events(args.key)
         if args.command == "status":

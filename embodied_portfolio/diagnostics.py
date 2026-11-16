@@ -99,6 +99,8 @@ class SupplyDiagnostics:
                           "mandatory_shortage": sum(cell.shortage for cell in coverage.cells if cell.mandatory),
                           "mandatory_gaps": missing,
                           "weighted_fraction": coverage.weighted_fraction,
+                          "license_term": offer.license_term,
+                          "price_scope": "per_period" if offer.is_subscription else "one_time",
                           "price": quote.amount, "price_mode": quote.mode,
                           "price_quantity": quote.quantity,
                           "permitted": quote.permitted, "restriction": quote.reason,
@@ -144,6 +146,8 @@ class SupplyDiagnostics:
                 quote = self.prices.quote(offer, requirement)
                 contributors.append({"package": offer.package, "provider": offer.provider,
                                      "count": matching.count, "identifiers_known": bool(matching.episode_ids),
+                                     "license_term": offer.license_term,
+                                     "price_scope": "per_period" if offer.is_subscription else "one_time",
                                      "whole_package_price": quote.amount})
             aggregate = sparse[token]
             rows.append({"slice": token, "minimum": target.minimum,

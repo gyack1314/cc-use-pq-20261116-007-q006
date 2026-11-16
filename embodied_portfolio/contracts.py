@@ -64,6 +64,7 @@ PATHS = {"teleoperation", "simulation", "portable", "internet"}
 OUTCOMES = {"success", "failure", "intervention"}
 PRICING = {"per_record", "per_hour", "flat"}
 LICENSES = {"nonexclusive", "single_customer", "restricted"}
+LICENSE_TERMS = {"perpetual", "subscription"}
 
 
 @dataclass(frozen=True)
@@ -121,6 +122,7 @@ class Offer:
     allowed_clients: tuple[str, ...]
     validity: str
     notes: str
+    license_term: str = "perpetual"
 
     @classmethod
     def parse(cls, value: Any) -> "Offer":
@@ -154,20 +156,24 @@ class Offer:
         clients = identifiers(value.get("allowed_clients", []), "allowed_clients", empty=True)
         if license_name != "nonexclusive" and not clients:
             raise PortfolioError("license_scope", "restricted license requires allowed clients")
+        license_term = value.get("license_term", "perpetual")
+        if license_term not in LICENSE_TERMS:
+            raise PortfolioError("license_term", "license_term must be perpetual or subscription")
         validity = text(value.get("validity", "indefinite"), "validity", 80)
         notes = value.get("notes", "")
         if not isinstance(notes, str) or len(notes) > 500:
             raise PortfolioError("notes", "notes must be short text")
         return cls(key(value.get("provider"), "provider"), key(value.get("package"), "package"),
                    path, robots, observations, str(hours), price_mode, str(unit_price),
-                   license_name, clients, validity, notes)
+                   license_name, clients, validity, notes, license_term)
 
     def document(self) -> dict[str, Any]:
         return {"provider": self.provider, "package": self.package, "path": self.path,
                 "robots": list(self.robots), "observations": [obs.document() for obs in self.observations],
                 "hours": self.hours, "price_mode": self.price_mode, "unit_price": self.unit_price,
                 "license": self.license, "allowed_clients": list(self.allowed_clients),
-                "validity": self.validity, "notes": self.notes}
+                "validity": self.validity, "notes": self.notes,
+                "license_term": self.license_term}
 
     @property
     def sample_count(self) -> int:
@@ -175,6 +181,10 @@ class Offer:
 
     def permits(self, client: str) -> bool:
         return self.license == "nonexclusive" or client in self.allowed_clients
+
+    @property
+    def is_subscription(self) -> bool:
+        return self.license_term == "subscription"
 
 
 @dataclass(frozen=True)
@@ -209,6 +219,7 @@ class Requirement:
     targets: tuple[Target, ...]
     allowed_paths: tuple[str, ...]
     maximum_packages: int
+    phases: int = 1
 
     @classmethod
     def parse(cls, value: Any) -> "Requirement":
@@ -226,14 +237,16 @@ class Requirement:
         if len(set(paths)) != len(paths):
             raise PortfolioError("allowed_paths", "duplicate collection path")
         maximum = count(value.get("maximum_packages", 12), "maximum_packages", minimum=1, maximum=24)
+        phases = count(value.get("phases", 1), "phases", minimum=1, maximum=24)
         return cls(key(value.get("key"), "requirement key"), key(value.get("client"), "client"),
                    text(value.get("title"), "title"), str(decimal(value.get("budget"), "budget", nonnegative=True)),
-                   targets, tuple(paths), maximum)
+                   targets, tuple(paths), maximum, phases)
 
     def document(self) -> dict[str, Any]:
         return {"key": self.key, "client": self.client, "title": self.title,
                 "budget": self.budget, "targets": [item.document() for item in self.targets],
-                "allowed_paths": list(self.allowed_paths), "maximum_packages": self.maximum_packages}
+                "allowed_paths": list(self.allowed_paths), "maximum_packages": self.maximum_packages,
+                "phases": self.phases}
 
 
 def parse_document(kind: str, value: Any) -> Offer | Requirement:
